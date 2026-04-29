@@ -44,7 +44,7 @@ CUDA_VISIBLE_DEVICES=1,2,3 deepspeed grpo.py
 
 ## Experimental Results
 
-We evaluated the implementation by training `Qwen2.5-1.5B-Instruct` on **4 * RTX 4090 D** GPUs.
+We evaluated the implementation by training `Qwen2.5-1.5B-Instruct` on 4 * RTX 4090 D GPUs.
 
 * **Dataset:** 3,000 questions randomly sampled from the GSM8K training split.
 * **Training:** 1 Epoch.
