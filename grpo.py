@@ -19,6 +19,9 @@ from math_verify import parse, verify, ExprExtractionConfig
 from ref import tensor_to_bytes, bytes_to_tensor, make_bytes_list, bytes_list_to_list
 os.environ['TOKENIZERS_PARALLELISM'] = 'true'
 
+loss_type = 'grpo'
+assert loss_type in ['grpo', 'gspo']
+
 Q_batch_size = 1
 model_name_or_path = "Qwen/Qwen2.5-1.5B-Instruct"
 beta = 0.04
@@ -140,7 +143,7 @@ def reward_format(item, answer):
     pattern = r"^<think>.*?</think>\s*<answer>.*?</answer><\|im_end\|>$" # 当前使用的Qwen2.5-7B-Instruct倾向于在</think>和<answer>间添加换行符，在</answer>后有表示生成结束的<|im_end|>。
     return 1.25 if re.match(pattern, answer, re.DOTALL | re.VERBOSE) else -1
 
-def gen_samples(inputs): # inputs的type是list，长度是Q_batch_size，default值为1。
+def gen_samples(inputs):
     prompts = [input["Q"] for input in inputs]
     answers = gen_answers(prompts)
     if len(answers) == 0: 
@@ -150,6 +153,7 @@ def gen_samples(inputs): # inputs的type是list，长度是Q_batch_size，defaul
     for i, input in enumerate(inputs):
         for a in answers[i * num_per_Q : (i + 1) * num_per_Q]:
             rewards.append(reward_correct(input, a) + reward_format(input, a))
+
     prompts_text = [
         tokenizer.apply_chat_template(
             [
@@ -247,7 +251,7 @@ def get_per_token_logps(logits, target_ids):
 def GRPO_step(batch):
     prompt_length = batch['plen']
     inputs = batch['inputs'].to(engine.device) # (num_per_Q, prompt_length + output_length)
-    advantages = batch['rewards'].to(engine.device).unsqueeze(1) # (num_per_Q, 1) 同一个query采样的G个response中，每个response所有token的advantage相同。
+    advantages = batch['rewards'].to(engine.device).unsqueeze(1) # (num_per_Q, 1)
 
     logits = engine(inputs).logits # (num_per_Q, prompt_length + output_length, V) = (B, L, V)
     logits = logits[:, :-1, :]  # (B, L-1, V), exclude the last logit: it corresponds to the next token pred
@@ -258,20 +262,35 @@ def GRPO_step(batch):
     ref_per_token_logps = batch['refs'].to(per_token_logps.device) # (num_per_Q, output_length)
 
     per_token_kl = torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1
-    completion_mask = (inputs[:, prompt_length:] != tokenizer.pad_token_id).int() # .int()之前的部分是bool tensor，.int()将其转换为int类型的tensor，有效token位置为1，padding位置为0。
+    completion_mask = (inputs[:, prompt_length:] != tokenizer.pad_token_id).int() # (num_per_Q, output_length)
+    # .int()之前的部分是bool tensor，.int()将其转换为int类型的tensor，有效token位置为1，padding位置为0。
 
-    if 'gen_logps' in batch:
-        policy_ratio = torch.exp(per_token_logps - batch['gen_logps'].to(engine.device)) # (num_per_Q, output_length)
-        clipped_policy_ratio = torch.clamp(policy_ratio, 1 - clip_param, 1 + clip_param)
-        per_token_loss = torch.min(policy_ratio * advantages, clipped_policy_ratio * advantages) # (num_per_Q, output_length)
-    else:
-        assert compute_gen_logps is False
-        per_token_loss = torch.exp(per_token_logps - per_token_logps.detach()) * advantages
-        
-    per_token_loss = -(per_token_loss - beta * per_token_kl)
-    loss = (
-        (per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)
-    ).mean()
+    if loss_type == 'grpo':
+        if 'gen_logps' in batch:
+            policy_ratio = torch.exp(per_token_logps - batch['gen_logps'].to(engine.device)) # (num_per_Q, output_length)
+            clipped_policy_ratio = torch.clamp(policy_ratio, 1 - clip_param, 1 + clip_param)
+            per_token_loss = torch.min(policy_ratio * advantages, clipped_policy_ratio * advantages) # (num_per_Q, output_length)
+        else:
+            assert compute_gen_logps is False
+            per_token_loss = torch.exp(per_token_logps - per_token_logps.detach()) * advantages
+        per_token_loss = -(per_token_loss - beta * per_token_kl)
+        loss = (
+            (per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)
+        ).mean()
+
+    elif loss_type == 'gspo':
+        assert compute_gen_logps is True
+        sequence_ratio = (
+            per_token_logps - batch['gen_logps'].to(engine.device)
+        ) * completion_mask # (num_per_Q, output_length)
+        sequence_ratio = torch.exp(
+            sequence_ratio.sum(dim=1) / completion_mask.sum(dim=1)
+        ) # (num_per_Q,)
+        clipped_sequence_ratio = torch.clamp(sequence_ratio, 1 - clip_param, 1 + clip_param)
+        sequence_loss = torch.min(sequence_ratio * advantages.squeeze(1), clipped_sequence_ratio * advantages.squeeze(1)) # (num_per_Q,)
+        kl_loss = beta * (per_token_kl * completion_mask).sum(dim=1) / completion_mask.sum(dim=1) # (num_per_Q,)
+        loss = -(sequence_loss - kl_loss).mean()
+
     return loss
 
 generate_mode(rank=torch.distributed.get_rank()) # 开始训练前，每个worker先进入一次generate_mode。

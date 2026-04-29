@@ -66,7 +66,8 @@ if __name__ == '__main__':
     def do_upload():
         dd = request.body.read()
         dd = bytes_list_to_list(dd)
-        if len(dd) not in (3, 4): return b'tensor'
+        if len(dd) not in (3, 4): 
+            return b'tensor'
         data = {'base': json.loads(dd[0])} 
         data['inputs'] = bytes_to_tensor(dd[1]) # (num_per_Q, prompt_length + output_length)
         data['rewards'] = bytes_to_tensor(dd[2]) # (num_per_Q,)
