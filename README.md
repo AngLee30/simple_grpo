@@ -46,7 +46,7 @@ CUDA_VISIBLE_DEVICES=1,2,3 deepspeed grpo.py
 
 We evaluated the implementation by training `Qwen2.5-1.5B-Instruct` on 4 * RTX 4090 D GPUs.
 
-* **Dataset:** 3,000 questions randomly sampled from the GSM8K training split.
+* **Dataset:** 3,000 questions randomly sampled from the GSM8K training split. The GSM8K training split used here is provided as `QAs.pkl` in this project.
 * **Training:** 1 Epoch.
 * **Evaluation:** 500 questions randomly sampled from the GSM8K training split. Detailed testing logic can be found in `test_model.py`.
 
