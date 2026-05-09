@@ -1,6 +1,6 @@
 # Simple GRPO
 
-This repository provides a clean and minimal implementation of the **Group Relative Policy Optimization (GRPO)** algorithm. 
+This repository provides a simplified implementation of the **Group Relative Policy Optimization (GRPO)** algorithm. 
 
 ## Overview
 
